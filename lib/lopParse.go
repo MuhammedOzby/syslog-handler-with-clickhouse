@@ -29,8 +29,9 @@ type LogData struct {
 func ParseLog(messageRaw string, remoteAddr *net.UDPAddr) LogData {
 	// Mesajı ilk boşluktan ayır
 	parts := strings.SplitN(messageRaw, " ", 2)
-
-	if len(parts) < 2 {
+	catStr := parts[0]
+	message := parts[1]
+	if len(parts) < 2 || len(strings.Split(catStr, ",")) < 2 {
 		return LogData{
 			Device:     remoteAddr.String(),
 			Timestamp:  time.Now(),
@@ -39,9 +40,6 @@ func ParseLog(messageRaw string, remoteAddr *net.UDPAddr) LogData {
 			Message:    messageRaw,
 		}
 	}
-
-	catStr := parts[0]
-	message := parts[1]
 
 	// Severity değeri hariç hepsi categori kapsamındadır.
 	topics := strings.Split(catStr, ",")

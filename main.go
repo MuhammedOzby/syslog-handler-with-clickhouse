@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
+	"github.com/joho/godotenv"
 )
 
 // Ayarlar
@@ -36,11 +37,11 @@ func mainLoop() int { // Logları taşıyacak tamponlu kanal (Buffered Channel)
 	/*-------------------------------------- Clickhouse Conn Başla --------------------------------------*/
 	// Bağlantı ayarları
 	connClickhouse, err := clickhouse.Open(&clickhouse.Options{
-		Addr: []string{"127.0.0.1:9000"},
+		Addr: []string{os.Getenv("DB_HOST")},
 		Auth: clickhouse.Auth{
-			Database: "home_lab",
-			Username: "ozbay",
-			Password: "Efs@ne_Guvenl1k",
+			Database: os.Getenv("DB_NAME"),
+			Username: os.Getenv("DB_USER"),
+			Password: os.Getenv("DB_PASS"),
 		},
 		// Bağlantı havuzu ayarları (Önemli!)
 		MaxOpenConns: 5,
@@ -90,5 +91,9 @@ func mainLoop() int { // Logları taşıyacak tamponlu kanal (Buffered Channel)
 Program başlangıç
 */
 func main() {
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatal(".env dosyası yüklenirken hata oluştu")
+	}
 	os.Exit(mainLoop())
 }
