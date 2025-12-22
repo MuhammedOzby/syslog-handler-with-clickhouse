@@ -1,0 +1,94 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"net"
+	"os"
+	"syslog-handler-with-clickhouse/lib"
+	"time"
+
+	"github.com/ClickHouse/clickhouse-go/v2"
+)
+
+// Ayarlar
+const (
+	CacheSize    = 1000            // 1000 log birikince yaz
+	CacheTimeout = 2 * time.Second // Veya 2 saniye geçince yaz
+	BufferLimit  = 10000           // Kanal kapasitesi (Burst koruması)
+)
+
+// Listener nesnesi
+var ListenerInfo net.UDPAddr = net.UDPAddr{
+	Port: 11514,
+	IP:   net.ParseIP("0.0.0.0"),
+}
+
+// Gelen mesajlar için buffer
+var messageBuffer = make([]byte, 40960)
+
+/*
+Ana döngü alanı mesaj geldikçe burada işlemler sağlanacak.
+*/
+func mainLoop() int { // Logları taşıyacak tamponlu kanal (Buffered Channel)
+	var programState int = 0
+	/*-------------------------------------- Clickhouse Conn Başla --------------------------------------*/
+	// Bağlantı ayarları
+	connClickhouse, err := clickhouse.Open(&clickhouse.Options{
+		Addr: []string{"127.0.0.1:9000"},
+		Auth: clickhouse.Auth{
+			Database: "home_lab",
+			Username: "ozbay",
+			Password: "Efs@ne_Guvenl1k",
+		},
+		// Bağlantı havuzu ayarları (Önemli!)
+		MaxOpenConns: 5,
+		MaxIdleConns: 5,
+	})
+	if err != nil {
+		log.Fatal("CH Bağlantı Hatası:", err)
+	}
+	defer connClickhouse.Close()
+
+	// Bağlantıyı test et
+	if err := connClickhouse.Ping(context.Background()); err != nil {
+		log.Fatal("CH Ping Hatası:", err)
+	}
+	/*-------------------------------------- Clickhouse Conn Bitir --------------------------------------*/
+
+	// Datayı direk yazarak yormak yerine araya bir cache
+	messageCache := make(chan lib.LogData, BufferLimit)
+
+	// INFO: Dinlemeye başla
+	Listener, err := net.ListenUDP("udp", &ListenerInfo)
+	if err != nil {
+		log.Fatalf("Port dinlenemedi: %v", err)
+	}
+	defer Listener.Close()
+
+	fmt.Printf("NOC Log Collector dinlemede: %s\n", Listener.LocalAddr().String())
+
+	// Cache kanalını sürekli kontrol eden ve boşaltan kısım
+	go lib.CacheFlush(connClickhouse, messageCache, CacheTimeout, CacheSize)
+
+	for {
+		buffLen, recivedAddr, err := Listener.ReadFromUDP(messageBuffer)
+		if err != nil {
+			log.Printf("UDP Okuma Hatası: %v", err)
+			programState = 1
+			break
+		}
+
+		messageRaw := string(messageBuffer[0:buffLen])
+		messageCache <- lib.ParseLog(messageRaw, recivedAddr)
+	}
+	return programState
+}
+
+/*
+Program başlangıç
+*/
+func main() {
+	os.Exit(mainLoop())
+}
