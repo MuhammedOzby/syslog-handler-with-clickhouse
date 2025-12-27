@@ -4,15 +4,31 @@
 
 ```mermaid
 flowchart TD
-  "UDP Listener" --> "Read Message"
-  "Read Message" --> "Parse Log (ParseLog)"
-  "Parse Log (ParseLog)" --> "Buffered Channel (messageCache)"
-  "Buffered Channel (messageCache)" --> "CacheFlush Goroutine"
-  "CacheFlush Goroutine" --> "Buffer Size Check"
-  "Buffer Size Check" -->|Buffer Full| "Flush to ClickHouse (flushLogs)"
-  "Buffer Size Check" -->|Timeout| "Flush to ClickHouse (flushLogs)"
-  "Flush to ClickHouse (flushLogs)" --> "Insert into ClickHouse"
-  "Insert into ClickHouse" --> "Database (ClickHouse)"
+    subgraph "UDP Listener"
+        A[Start UDP Listener] --> B{Receive UDP Packet};
+    end
+
+    subgraph "Log Processing Pipeline"
+        B --> C[Parse Syslog Message];
+        C --> D{Extract Log Fields};
+        D --> E[Send to Cache];
+    end
+
+    subgraph "Cache Management"
+        E --> F[Append to Buffer];
+        F --> G{Buffer Full?};
+        G -- Yes --> H[Flush to ClickHouse];
+        G -- No --> I{Timeout Reached?};
+        I -- Yes --> H;
+        I -- No --> F;
+    end
+
+    subgraph "ClickHouse"
+        H --> J[Insert Logs];
+    end
+
+    style A fill:#f28500,stroke:#000,stroke-width:2px,color:#000
+    style J fill:#f28500,stroke:#000,stroke-width:2px,color:#000
 ```
 
 ## 📁 About
