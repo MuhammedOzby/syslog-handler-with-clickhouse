@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"net"
@@ -20,20 +21,21 @@ const (
 	BufferLimit  = 10000           // Kanal kapasitesi (Burst koruması)
 )
 
-// Listener nesnesi
-var ListenerInfo net.UDPAddr = net.UDPAddr{
-	Port: 11514,
-	IP:   net.ParseIP("0.0.0.0"),
-}
-
-// Gelen mesajlar için buffer
-var messageBuffer = make([]byte, 40960)
-
 /*
 Ana döngü alanı mesaj geldikçe burada işlemler sağlanacak.
 */
 func mainLoop() int { // Logları taşıyacak tamponlu kanal (Buffered Channel)
 	var programState int = 0
+	portFlag := flag.Int("port", 514, "Deinlenecek UDP port kapı numarası") // go run main.go --port 11514
+	flag.Parse()
+	// Listener nesnesi
+	var ListenerInfo net.UDPAddr = net.UDPAddr{
+		Port: *portFlag,
+		IP:   net.ParseIP("0.0.0.0"),
+	}
+
+	// Gelen mesajlar için buffer
+	var messageBuffer = make([]byte, 40960)
 	/*-------------------------------------- Clickhouse Conn Başla --------------------------------------*/
 	// Bağlantı ayarları
 	connClickhouse, err := clickhouse.Open(&clickhouse.Options{

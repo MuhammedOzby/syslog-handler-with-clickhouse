@@ -1,287 +1,136 @@
-# syslog‑handler‑with‑clickhouse  
-> **syslog‑handler‑with‑clickhouse** – UDP üzerinden gelen syslog mesajlarını alır, parçalayıp **ClickHouse** veritabanına toplu olarak yazar.  
-> Proje 0‑yazılımı (no‑code) yaklaşımıyla, Go 1.24+ sürümünde derlenebilir.
+# Syslog Handler with ClickHouse – README
 
----
+## 📊 Logic Flow (Mermaid)
 
-## 📋 Proje Tanıtımı
+```mermaid
+flowchart TD
+  "UDP Listener" --> "Read Message"
+  "Read Message" --> "Parse Log (ParseLog)"
+  "Parse Log (ParseLog)" --> "Buffered Channel (messageCache)"
+  "Buffered Channel (messageCache)" --> "CacheFlush Goroutine"
+  "CacheFlush Goroutine" --> "Buffer Size Check"
+  "Buffer Size Check" -->|Buffer Full| "Flush to ClickHouse (flushLogs)"
+  "Buffer Size Check" -->|Timeout| "Flush to ClickHouse (flushLogs)"
+  "Flush to ClickHouse (flushLogs)" --> "Insert into ClickHouse"
+  "Insert into ClickHouse" --> "Database (ClickHouse)"
+```
 
-- **UDP 11514** portu üzerinden Syslog standartı (RFC 5424) ve RFC 3164 ile gelen mesajları dinler.
-- Gelen mesajları **LogData** yapısına çevirir (`lib.ParseLog`).
-- 1 000 log veya 2 saniyede bir **Cache Flush** tetiklenerek veritabanına toplu yazılır (batch).
-- **ClickHouse** bağlantısı için `clickhouse-go/v2` sürücüsü kullanılır.
-- Bağlantı havuzu (max 5 bağlantı) ve `godotenv` ile `.env` dosyası okunur.
-- Proje **MIT** lisansına sahiptir.
+## 📁 About
 
----
+This project is a lightweight **syslog collector** written in Go.  
+It listens for UDP syslog messages, parses each message into a structured format, and stores the logs in a **ClickHouse** database in batches.  
+The goal is to handle high‑volume syslog traffic efficiently while keeping database write load low.
 
-## 🚀 Özellikler
+## 🔎 Entrance
 
-| Özellik | Açıklama |
-|---------|----------|
-| **UDP dinleme** | 11514 portu üzerinden syslog girişi. |
-| **Caching** | `CacheSize=1000`, `CacheTimeout=2s` ile toplu yazar. |
-| **Veri tabanı** | ClickHouse (SQL engine) – hızlı okuma‑yazma. |
-| **Yüksek performans** | Buffer limit (`BufferLimit=10000`) ile burst koruması. |
-| **Environment‑based config** | `.env` ile veritabanı, port, IP vb. ayarlanır. |
-| **Kolay derleme** | Tek `go build` ile bağımsız binary. |
-| **Lisans** | MIT – tam özgürlük. |
+- **Why this code?**  
+  Network operations centers (NOCs) and security teams need a fast, reliable way to collect and analyze syslog data.  
+  Existing solutions may be heavyweight or lack batching, leading to dropped messages or slow inserts.
 
----
+- **Where to use?**  
+  Deploy it in:
+  - NOCs for real‑time monitoring
+  - SIEMs for log aggregation
+  - Anywhere you need a central, scalable syslog repository
 
-## 🛠️ Kurulum
+## 📚 Explain
 
-> **Önkoşullar**
-> - Go 1.24+ (modüler proje, `go.mod` var)
-> - ClickHouse sunucusu (örneğin, docker‑de çalışır)
+### 1️⃣ Main components
 
-### 1. Depoyu klonlayın
+| File | Responsibility |
+|------|----------------|
+| `main.go` | Application entry point: parses flags, sets up ClickHouse connection, starts UDP listener, launches cache goroutine. |
+| `lib/listener.go` | Simple struct to hold listener address and port. |
+| `lib/lopParse.go` | Parses RFC 5424 syslog messages into a `LogData` struct. Handles severity extraction and categorization. |
+| `lib/cacheManage.go` | Manages an in‑memory buffer (`cacheBuffer`) that accumulates logs. When buffer size or timeout triggers, it calls `flushLogs` to write a batch to ClickHouse. |
+| `go.mod` / `go.sum` | Dependencies, including the ClickHouse driver and environment loader. |
+
+### 2️⃣ Data flow
+
+1. **UDP Listener** (`net.ListenUDP`) waits on the configured port (default 514).  
+2. When a packet arrives, it is read into a byte slice and converted to a string.  
+3. `ParseLog` is invoked with the raw message and the sender’s UDP address.  
+4. The resulting `LogData` struct is sent through a **buffered channel** (`messageCache`).  
+5. A dedicated goroutine runs `CacheFlush`, which:
+   - Collects logs into an in‑memory slice.
+   - Checks if either **buffer size** (`CacheSize`) or **timeout** (`CacheTimeout`) has been reached.
+   - Calls `flushLogs`, preparing a ClickHouse batch and sending it with a 10‑second context timeout.  
+6. Successful inserts log the number of rows written; errors are reported to `log`.
+
+### 3️⃣ Key constants
+
+| Constant | Meaning |
+|----------|---------|
+| `CacheSize` | Number of logs to buffer before a write (1000). |
+| `CacheTimeout` | Maximum time to wait before flushing buffered logs (2 s). |
+| `BufferLimit` | Channel capacity to avoid bursts (10 000). |
+
+### 4️⃣ Error handling
+
+- Connection issues to ClickHouse terminate the program.
+- UDP read errors set the program state to `1` and exit the loop.
+- Batch preparation or send errors are logged but do not crash the goroutine.
+
+### 5️⃣ Environment variables
+
+| Variable | Purpose |
+|----------|---------|
+| `DB_HOST` | ClickHouse server address |
+| `DB_NAME` | Target database |
+| `DB_USER` | Username |
+| `DB_PASS` | Password |
+
+These are loaded by `godotenv` at startup.
+
+## 🚀 Usage Examples
 
 ```bash
-git clone https://github.com/muhammadsb/syslog-handler-with-clickhouse.git
-cd syslog-handler-with-clickhouse
+# 1️⃣ Build and run (default port 514)
+go run main.go
+
+# 2️⃣ Run on a custom port
+go run main.go -port 11514
+
+# 3️⃣ Using a .env file
+echo "DB_HOST=localhost:9000" >> .env
+echo "DB_NAME=logs" >> .env
+echo "DB_USER=default" >> .env
+echo "DB_PASS=" >> .env
+go run main.go
 ```
 
-### 2. Bağımlılıkları indirin
+**Send a test syslog message**
 
 ```bash
-go mod download
+echo "<166>1 2023-10-27T10:00:00+00:00 MyDevice this is a test" | nc -u -w1 127.0.0.1 514
 ```
 
-### 3. Çevresel Değişkenleri Ayarlayın
-
-Projenin kök dizininde `.env` dosyası oluşturun:
-
-```env
-DB_HOST=clickhouse:9000
-DB_NAME=logs
-DB_USER=default
-DB_PASS=
-# Varsayılan: 11514 portu, 0.0.0.0 IP
-```
-
-> **Not**  
-> `DB_HOST` ClickHouse’ın IP/hostname ve portu (`<ip>:<port>`).  
-> ClickHouse’ın `users.xml` dosyasında `logs` veritabanı ve `default` kullanıcı hakları olduğundan emin olun.
-
-### 4. Derleme
-
-```bash
-go build -o syslog-collector
-```
-
-### 5. Çalıştırma
-
-```bash
-./syslog-collector
-```
-
-> Çalıştıktan sonra konsolda şu mesajı görürsünüz:  
-> `NOC Log Collector dinlemede: 0.0.0.0:11514`
-
----
-
-## 📦 Örnek Mimari
+You should see console output like:
 
 ```
-┌───────────────────────┐
-│  UDP Dinleyici (11514)│
-│  ┌────────────────────┐│
-│  │ ParseLog (RFC5424) ││
-│  └────────────────────┘│
-│  Cache (1k / 2s)      │
-│  ┌────────────────────┐│
-│  │ CacheFlush         ││
-│  └────────────────────┘│
-│  ClickHouse Bağlantısı│
-└───────────────────────┘
+>> 1 adet log ClickHouse'a yazıldı.
 ```
 
-> `lib` klasörü içinde:
-> - `LogData` yapısı  
-> - `ParseLog(msg string) (LogData, error)`  
-> - `CacheFlush(ctx context.Context, data []LogData)` (batch insert)
+## 📌 Conclusion
 
----
+- **What does it do?**  
+  It collects syslog UDP packets, parses them, buffers them, and writes them in bulk to ClickHouse.  
+- **Why is it useful?**  
+  Provides a high‑performance, low‑overhead way to ingest logs for analysis or alerting.  
+- **When to deploy?**  
+  In environments where log volume is high and you need quick, query‑friendly storage.
 
-## 📦 Kullanım Örneği
+> That explanation created from AI.
 
-```go
-package main
+## AI Context & Memory
 
-import (
-	"context"
-	"log"
-	"os"
+This Go project implements a UDP‑based syslog collector that parses RFC 5424 messages into a `LogData` struct and buffers them before bulk inserting into ClickHouse. Core logic:
 
-	"github.com/muhammadsb/syslog-handler-with-clickhouse/lib"
-	"github.com/ClickHouse/clickhouse-go/v2"
-	"github.com/joho/godotenv"
-)
+- `main.go` parses command‑line flags, loads environment, opens ClickHouse connection, starts a UDP listener, and spawns a goroutine for `CacheFlush`.
+- `lib/lopParse.go` splits raw syslog string, extracts severity (0‑7 enum), device IP, categories, and message body.
+- `lib/cacheManage.go` accumulates logs into an in‑memory slice, flushes on buffer size or timeout, and uses a prepared batch for ClickHouse insertion with a 10 s context.
+- Buffered channel (`messageCache`) prevents backpressure; `BufferLimit` caps burst capacity.
+- Environment variables (`DB_HOST`, `DB_NAME`, `DB_USER`, `DB_PASS`) configure ClickHouse connectivity via `clickhouse-go/v2`.
+- The system logs insert counts or errors, enabling monitoring of data flow.
 
-func main() {
-	// .env okunuyor
-	if err := godotenv.Load(); err != nil {
-		log.Fatal(err)
-	}
-
-	// ClickHouse bağlantısı
-	conn, err := clickhouse.Open(
-		&clickhouse.Options{
-			Addr: []string{os.Getenv("DB_HOST")},
-			Auth: clickhouse.Auth{
-				Database: os.Getenv("DB_NAME"),
-				Username: os.Getenv("DB_USER"),
-				Password: os.Getenv("DB_PASS"),
-			},
-		},
-	)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// Mesaj dinleme
-	// (Port/IP varsayılan, lib.ParseLog ile parse)
-	// Cache flush işlemi main.go içinde otomatik
-}
-```
-
-> Günlük tablo şablonu (`logs` veritabanında):
-
-```sql
-CREATE TABLE IF NOT EXISTS logs.events (
-    id          UInt64,
-    host        String,
-    appname     String,
-    priority    UInt8,
-    message     String,
-    ts          DateTime
-) ENGINE = MergeTree()
-ORDER BY ts;
-```
-
-> Her 1 000 log veya 2 saniyede bir `INSERT` ile toplu yazım yapılır, böylece ClickHouse’da “write‑latency” düşük kalır.
-
----
-
-## 🧪 Test
-
-> Projeye birim‑test dosyası eklenmediği için, entegrasyon testleri ClickHouse’la manuel olarak yapılır.  
-> Basit bir test için `syslog‑generator` gibi bir araçla UDP üzerinden log gönderin:
-
-```bash
-logger -p local0.info "Hello syslog handler" --rfc3164
-```
-
-> Çıktının ClickHouse’ta göründüğünden emin olun:
-
-```sql
-SELECT * FROM logs.events ORDER BY ts DESC LIMIT 5;
-```
-
----
-
-## 🏗️ Mimari
-
-```
-┌─────────────────────┐
-│  main.go             │
-│  ├─ UDP Dinleyici    │
-│  ├─ Cache Flush      │
-│  └─ ClickHouse Writer│
-└─────────────────────┘
-          │
-          ▼
-┌─────────────────────┐
-│  lib/                │
-│  ├─ LogData          │
-│  ├─ ParseLog()       │
-│  └─ CacheFlush()     │
-└─────────────────────┘
-```
-
-- **Cache Flush**: `go routine` ile zamanlayıcıdır, `CacheSize` ve `CacheTimeout` e göre tetiklenir.
-- **Batch**: `conn.WriteBatch` ile tek seferde 1 000 kayıt yazılır.
-- **Buffer**: `BufferLimit` 10 000 log’a kadar gelenleri tutar; bu limit aşılırsa `logger.Fatal` ile hata rapor edilir.
-
----
-
-## 📄 Örnek Yapılandırma
-
-```bash
-# .env
-DB_HOST=clickhouse:9000
-DB_NAME=logs
-DB_USER=default
-DB_PASS=
-```
-
-```sql
--- ClickHouse: logs veritabanı oluşturma
-CREATE DATABASE IF NOT EXISTS logs;
-USE logs;
-
--- Tablo oluşturma
-CREATE TABLE IF NOT EXISTS events (
-    id          UInt64,
-    host        String,
-    appname     String,
-    priority    UInt8,
-    message     String,
-    ts          DateTime
-) ENGINE = MergeTree()
-ORDER BY ts;
-```
-
----
-
-## 🙏 Katkıda Bulunma
-
-1. **Fork** ve **branch** oluşturun: `feature/<özellik>`.
-2. Değişiklikleri test edin: `go test ./...` (önce test dosyaları eklenmelidir).
-3. Commit mesajlarını **Conventional Commits** kuralları ile yazın:
-   ```
-   feat: cache timeout iyileştirmesi
-   fix: ParseLog hatası düzeltildi
-   ```
-4. Pull‑request gönderin.
-
----
-
-## 📄 Lisans
-
-MIT. Detaylı bilgi için `LICENSE` dosyasını inceleyin.  
-Proje tamamen açık kaynak olup, ticari ve kişisel kullanımda sınırlama yoktur.
-
---- 
-
-## 📞 Destek
-
-- **Issue**: Herhangi bir hata, öneri ya da sorular için Issues bölümü kullanılabilir.
-- **Mail**: muhammadsb@example.com (Opsiyonel)
-
----
-
-## 📌 Sık Sorulan Sorular
-
-| Soru | Cevap |
-|------|-------|
-| **Neden ClickHouse?** | Yüksek yazma hızı, kolon‑tabanlı saklama ve sorgu performansı. |
-| **UDP 11514 portu** | RFC 5424 (IPv4/IPv6) syslog için yaygın port. |
-| **Cache Flush nedir?** | Belirlenen log sayısına/veya süreye ulaşıldığında, cache içindeki verilerin toplu olarak veritabanına yazılması. |
-| **Çok sayıda mesaj geldiğinde ne olur?** | `BufferLimit` 10 000, bu değeri aşan mesajlar loglanır ve program sonlandırılır. Bu değer ihtiyaca göre değiştirilebilir. |
-
----
-
-## 🎉 Katkı Sağlayacaklar
-
-- **Yeni syslog formatları** (`RFC 5424`, `RFC 3164`) için `ParseLog` destek ekleme
-- **Dockerfile** ile otomatik container oluşturma
-- **Grafana/Prometheus** ile monitoring entegrasyonu
-- **CI / CD** pipeline (GitHub Actions, GitLab CI, etc.)
-
---- 
-
-> Projeyi derledikten sonra `./syslog-collector` çalıştırın ve ClickHouse veritabanınızı izleyin!  
-> Teşekkürler!
-
+Suitable for AI agents to understand message parsing, caching, and database write patterns in a high‑throughput logging pipeline.
